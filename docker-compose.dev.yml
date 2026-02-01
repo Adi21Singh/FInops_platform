@@ -1,0 +1,172 @@
+# FinOps Platform - Local Development Environment
+# ================================================
+
+version: "3.9"
+
+services:
+  # ============================================
+  # Platform API
+  # ============================================
+  platform-api:
+    build:
+      context: ./portal/api
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8080:8080"
+    environment:
+      - ENV=development
+      - LOG_LEVEL=debug
+      - DATABASE_URL=postgresql://finops:finops@postgres:5432/finops
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./portal/api:/app
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # Web Portal (React)
+  # ============================================
+  portal-web:
+    build:
+      context: ./portal/web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - REACT_APP_API_URL=http://localhost:8080
+    volumes:
+      - ./portal/web:/app
+      - /app/node_modules
+    depends_on:
+      - platform-api
+
+  # ============================================
+  # Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=finops
+      - POSTGRES_PASSWORD=finops
+      - POSTGRES_DB=finops
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Cache
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Observability - Prometheus
+  # ============================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./observability/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  # ============================================
+  # Observability - Grafana
+  # ============================================
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # ============================================
+  # Observability - Loki (Logging)
+  # ============================================
+  loki:
+    image: grafana/loki:2.9.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  # ============================================
+  # Observability - Tempo (Tracing)
+  # ============================================
+  tempo:
+    image: grafana/tempo:2.3.0
+    ports:
+      - "3200:3200"   # Tempo
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./observability/tempo/tempo-config.yml:/etc/tempo/tempo.yaml
+      - tempo_data:/tmp/tempo
+    command: -config.file=/etc/tempo/tempo.yaml
+
+  # ============================================
+  # Local Registry
+  # ============================================
+  registry:
+    image: registry:2
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry_data:/var/lib/registry
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
+  registry_data:
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  default:
+    name: finops-network
